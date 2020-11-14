@@ -194,7 +194,7 @@ class Loader():
                         and symbol['st_shndx'] != 'SHN_UNDEF'):
                     global_list[symbol['st_value']].append({
                         'name':
-                        "{}_{:x}".format(symbol.name, symbol['st_value']),
+                        symbol.name,
                         'sz':
                         symbol['st_size'],
                     })
