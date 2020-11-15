@@ -22,6 +22,8 @@ class Loader():
                                         if seg['p_type'] == "PT_LOAD")['p_vaddr']
         return self.elffile['e_type'] == 'ET_DYN' and base_address == 0
 
+
+
     def load_functions(self, fnlist):
         section = self.elffile.get_section_by_name(".text")
         data = section.data()
@@ -150,6 +152,46 @@ class Loader():
                     }
 
         return function_list
+
+
+
+    # keep track of the list of alias symbols at the same address
+    # by JX
+    def aliaslist_from_symtab(self):
+        symbol_tables = [
+            sec for sec in self.elffile.iter_sections()
+            if isinstance(sec, SymbolTableSection)
+        ]
+
+        alias_list = dict()
+
+        for section in symbol_tables:
+            if not isinstance(section, SymbolTableSection):
+                continue
+
+            if section['sh_entsize'] == 0:
+                continue
+
+            #let's aggressively consider all aliases
+            for symbol in section.iter_symbols():
+                #if symbol['st_other']['visibility'] == "STV_HIDDEN":
+                #   continue
+
+                #if symbol['st_shndx'] == 'SHN_UNDEF':
+                #   continue
+
+                if symbol['st_value'] not in alias_list:
+                    alias_list[symbol['st_value']] = set()
+                
+                if len(symbol.name):
+                    alias_list[symbol['st_value']].add(symbol.name)
+
+        return alias_list
+
+    #added by JX
+    def load_aliases(self, alist):
+        self.container.add_aliases(alist)
+
 
     def slist_from_symtab(self):
         sections = dict()

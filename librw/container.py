@@ -36,6 +36,14 @@ class Container():
         self.gotplt_sz = None
         self.gotplt_entries = list()
 
+        #added by JX
+        self.alias_list = dict()
+
+
+    #added by JX
+    def add_aliases(self, alias_list):
+        self.alias_list = alias_list
+
     def add_function(self, function):
         if function.name in self.function_names:
             function.name = "%s_%x" % (function.name, function.start)
@@ -130,6 +138,9 @@ class Function():
         self.bbstarts = set()
         self.bind = bind
 
+        #added by JX
+        self.alias = set()
+
         # Populated during symbolization.
         # Invalidated by any instrumentation.
         self.nexts = defaultdict(list)
@@ -141,6 +152,9 @@ class Function():
 
         # Is this an instrumented function?
         self.instrumented = False
+
+    def set_alias(self, alias):
+        self.alias = alias
 
     def set_instrumented(self):
         self.instrumented = True
@@ -173,11 +187,26 @@ class Function():
 
         results = []
         # Put all function names and define them.
-        if self.bind == "STB_GLOBAL":
-            results.append(".globl %s" % (self.name))
-        else:
-            results.append(".local %s" % (self.name))
+        scope = ".globl"
+
+        if self.bind != "STB_GLOBAL": 
+            scope = ".local"
+
+        results.append(scope + " %s" % self.name)
+        #if self.bind == "STB_GLOBAL":
+         #   results.append(".globl %s" % (self.name))
+        #else:
+            #results.append(".local %s" % (self.name))
+    
         results.append(".type %s, @function" % (self.name))
+
+        #added by jx
+        for al in self.alias:
+            if al != self.name:
+                results.append(".global %s" % (al))
+                results.append(".set %s,%s" % (al, self.name))
+        #end add by jx
+
         results.append("%s:" % (self.name))
 
         for instruction in self.cache:
@@ -201,6 +230,13 @@ class Function():
 
             for iinstr in instruction.after:
                 results.append("{}".format(iinstr))
+
+       #added by jx 
+        for al in self.alias:
+            if al != self.name:
+                results.append(".size %s,.-%s" % (al, al))
+        #end by jx
+
 
         results.append(".size %s,.-%s" % (self.name, self.name))
 

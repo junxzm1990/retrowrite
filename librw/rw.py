@@ -70,6 +70,12 @@ class Rewriter():
         for _, function in sorted(self.container.functions.items()):
             if function.name in Rewriter.GCC_FUNCTIONS:
                 continue
+
+            #added by JX
+            #the same address has more than one symbols
+            if function.start in self.container.alias_list and len(self.container.alias_list[function.start]) > 1:
+                function.set_alias(self.container.alias_list[function.start])
+
             results.append("\t.text\n%s" % (function))
 
         with open(self.outfile, 'w') as outfd:
