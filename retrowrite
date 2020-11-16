@@ -121,11 +121,17 @@ if __name__ == "__main__":
 
 
     loader = Loader(args.bin)
+
+
     if loader.is_pie() == False and args.ignorepie == False:
         print("***** RetroWrite requires a position-independent executable. *****")
         print("It looks like %s is not position independent" % args.bin)
         print("If you really want to continue, because you think retrowrite has made a mistake, pass --ignorepie.")
         sys.exit(1)
+
+    #added by JX
+    loader.load_dup_symbols()
+    #end by JX
 
     flist = loader.flist_from_symtab()
     loader.load_functions(flist)
@@ -147,6 +153,9 @@ if __name__ == "__main__":
     alias_list = loader.aliaslist_from_symtab()
     loader.load_aliases(alias_list)
 
+    tls_list = loader.tlslist_from_symtable()
+    loader.load_tls(tls_list)
+    #end by JX
 
     loader.container.attach_loader(loader)
 

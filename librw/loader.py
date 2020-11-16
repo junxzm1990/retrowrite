@@ -10,18 +10,19 @@ from elftools.elf.relocation import RelocationSection
 from .container import Container, Function, DataSection
 from .disasm import disasm_bytes
 
+from .rw import Rewriter
 
 class Loader():
     def __init__(self, fname):
         self.fd = open(fname, 'rb')
         self.elffile = ELFFile(self.fd)
         self.container = Container()
+        self.dup_symbols = dict()
 
     def is_pie(self):
         base_address = next(seg for seg in self.elffile.iter_segments() 
                                         if seg['p_type'] == "PT_LOAD")['p_vaddr']
         return self.elffile['e_type'] == 'ET_DYN' and base_address == 0
-
 
 
     def load_functions(self, fnlist):
@@ -42,17 +43,13 @@ class Loader():
             section = self.elffile.get_section_by_name(sec)
             data = section.data()
             more = bytearray()
-            if sec == ".init_array":
-                if len(data) > 8:
-                    data = data[8:]
-                else:
-                    data = b''
-                more.extend(data)
-            else:
-                more.extend(data)
-                if len(more) < sval['sz']:
-                    more.extend(
-                        [0x0 for _ in range(0, sval['sz'] - len(more))])
+       
+            # added by JX; do not remove one item from init_array
+            # I have no idea of why doing that
+            more.extend(data)
+            if len(more) < sval['sz']:
+                more.extend(
+                    [0x0 for _ in range(0, sval['sz'] - len(more))])
 
             bytes = more
             ds = DataSection(sec, sval["base"], sval["sz"], bytes,
@@ -87,6 +84,53 @@ class Loader():
                       reloc_section)
                 self.container.add_relocations(section, relocations)
 
+    #added by JX
+    def adjust_sym_name(self, symbol):
+
+        if symbol['st_size'] == 0:
+            return symbol.name 
+
+        if symbol.name in Rewriter.GCC_FUNCTIONS:
+            return symbol.name 
+        
+        if symbol['st_info']['bind'] == "STB_GLOBAL":
+            return symbol.name  
+
+        if symbol.name not in self.dup_symbols:
+            return symbol.name  
+
+        if len(self.dup_symbols[symbol.name]) > 1:
+            return symbol.name + "_"+ str(hex(symbol['st_value']))
+        else:
+            return symbol.name  
+
+    def load_dup_symbols(self):
+        symbol_tables = [
+            sec for sec in self.elffile.iter_sections()
+            if isinstance(sec, SymbolTableSection)
+        ]
+
+        function_list = dict()
+
+        for section in symbol_tables:
+            if not isinstance(section, SymbolTableSection):
+                continue
+
+            if section['sh_entsize'] == 0:
+                continue
+
+            for symbol in section.iter_symbols():
+                if symbol['st_other']['visibility'] == "STV_HIDDEN":
+                    continue
+
+                    
+                if symbol.name not in self.dup_symbols:
+                    self.dup_symbols[symbol.name] = set()
+
+                self.dup_symbols[symbol.name].add(symbol['st_value'])
+        #end by JX
+
+
     def reloc_list_from_symtab(self):
         relocs = defaultdict(list)
 
@@ -106,7 +150,8 @@ class Loader():
                         symsec = self.elffile.get_section(symbol['st_shndx'])
                         symbol_name = symsec.name
                     else:
-                        symbol_name = symbol.name
+                        symbol_name = self.adjust_sym_name(symbol)
+
                 else:
                     symbol = dict(st_value=None)
                     symbol_name = None
@@ -117,6 +162,7 @@ class Loader():
                     'offset': rel['r_offset'],
                     'addend': rel['r_addend'],
                     'type': rel['r_info_type'],
+                    'r_info_sym': rel['r_info_sym'],
                 }
 
                 relocs[section.name].append(reloc_i)
@@ -144,8 +190,10 @@ class Loader():
 
                 if (symbol['st_info']['type'] == 'STT_FUNC'
                         and symbol['st_shndx'] != 'SHN_UNDEF'):
+
                     function_list[symbol['st_value']] = {
-                        'name': symbol.name,
+                        'name': self.adjust_sym_name(symbol), 
+                        #JX changed the name; needs to make sure the symbols and relocations are consistent
                         'sz': symbol['st_size'],
                         'visibility': symbol['st_other']['visibility'],
                         'bind': symbol['st_info']['bind'],
@@ -156,7 +204,7 @@ class Loader():
 
 
     # keep track of the list of alias symbols at the same address
-    # by JX
+    # added by JX
     def aliaslist_from_symtab(self):
         symbol_tables = [
             sec for sec in self.elffile.iter_sections()
@@ -184,14 +232,42 @@ class Loader():
                     alias_list[symbol['st_value']] = set()
                 
                 if len(symbol.name):
-                    alias_list[symbol['st_value']].add(symbol.name)
+                    alias_list[symbol['st_value']].add(self.adjust_sym_name(symbol))
+                    #JX changed the name; needs to make sure the symbols and relocations are consistent
 
         return alias_list
 
-    #added by JX
+
+    #obtain the list of TLS symbols (they are very special)
+    def tlslist_from_symtable(self):
+
+        symbol_tables = [
+            sec for sec in self.elffile.iter_sections()
+            if isinstance(sec, SymbolTableSection)
+        ]
+
+        tlslist = set()
+
+        for section in symbol_tables:
+
+            if section['sh_entsize'] == 0:
+                continue
+
+            #let's aggressively consider all aliases
+            for symbol in section.iter_symbols():
+                if symbol['st_info']['type'] == "STT_TLS":
+                    tlslist.add(symbol)
+                    print (symbol['st_info']['type'] + symbol.name)
+
+        return tlslist
+
     def load_aliases(self, alist):
         self.container.add_aliases(alist)
 
+    def load_tls(self, tls_list):
+        self.container.add_tlslist(tls_list)
+
+    #end by JX
 
     def slist_from_symtab(self):
         sections = dict()
@@ -236,9 +312,12 @@ class Loader():
                         and symbol['st_shndx'] != 'SHN_UNDEF'):
                     global_list[symbol['st_value']].append({
                         'name':
-                        symbol.name,
+                        self.adjust_sym_name(symbol),
+                        #JX changed the name; needs to make sure the symbols and relocations are consistent
                         'sz':
                         symbol['st_size'],
+                        'visibility': symbol['st_other']['visibility'],
+                        'bind': symbol['st_info']['bind'],    
                     })
 
         return global_list

@@ -8,6 +8,7 @@ from capstone.x86_const import X86_REG_RIP
 from elftools.elf.descriptions import describe_reloc_type
 from elftools.elf.enums import ENUM_RELOC_TYPE_x64
 
+from elftools.elf.relocation import RelocationSection
 
 class Rewriter():
     GCC_FUNCTIONS = [
@@ -39,7 +40,7 @@ class Rewriter():
         "__cxa_finalize",
     ]
 
-    DATASECTIONS = [".rodata", ".data", ".bss", ".data.rel.ro", ".init_array"]
+    DATASECTIONS = [".rodata", ".data", ".bss", ".data.rel.ro", ".init_array", ".fini_array"]
 
     def __init__(self, container, outfile):
         self.container = container
@@ -63,6 +64,30 @@ class Rewriter():
         for sec, section in sorted(
                 self.container.sections.items(), key=lambda x: x[1].base):
             results.append("%s" % (section))
+
+
+        #added by JX; let's add the TLS section
+
+            #.section        .tbss,"awT",@nobits
+            #        .align 4
+            #        .type   main_tls_var, @object
+            #        .size   main_tls_var, 4
+            #main_tls_var:
+            #        .zero   4
+
+        results.append(".section .tbss,@nobits")
+        results.append(".align 32")
+
+        for tls in self.container.tls_list:
+            results.append(".type\t" + tls.name + ",@object")
+            results.append(".globl\t" + tls.name)
+            results.append(".size\t" + tls.name + ", %d" % (tls['st_size']))
+            results.append(tls.name + ":")
+            results.append("\t.zero\t%d" % (tls['st_size']))
+
+        #end by JX
+
+
 
         results.append(".section .text")
         results.append(".align 16")
@@ -289,6 +314,24 @@ class Symbolizer():
 
         return False
 
+
+    #added by JX
+    def obtain_symbol_for_reloc(self, container, rel):
+
+        for section in container.loader.elffile.iter_sections():
+            if not isinstance(section, RelocationSection):
+                continue
+
+            symtable = container.loader.elffile.get_section(section['sh_link'])
+            symbol = None
+
+            if rel['r_info_sym'] != 0:
+                symbol = symtable.get_symbol(rel['r_info_sym'])
+
+            return symbol
+        #end by JX
+
+
     def symbolize_mem_accesses(self, container, context):
         for _, function in container.functions.items():
             for inst in function.cache:
@@ -358,11 +401,33 @@ class Symbolizer():
         elif reloc_type == ENUM_RELOC_TYPE_x64["R_X86_64_64"]:
             value = rel['st_value'] + rel['addend']
             label = ".LC%x" % value
+            
+            # changed by JX
+            if value == 0 or value == 0x10:
+                symbol = self.obtain_symbol_for_reloc(container, rel)
+                if symbol:
+                    print("Found one at offset %x of value %x with name %s" % (value, rel['offset'], symbol.name))
+                    label = symbol.name
+
             section.replace(rel['offset'], 8, label)
+
+            #end by JX
+
         elif reloc_type == ENUM_RELOC_TYPE_x64["R_X86_64_RELATIVE"]:
             value = rel['addend']
             label = ".LC%x" % value
+            
+
+            # added by JX
+            if value == 0 or value == 0x10 :
+                symbol = self.obtain_symbol_for_reloc(container, rel)
+                if symbol:
+                    label = symbol.name
+                    print("Found one at offset %x of value %x with name %s" % (value, rel['offset'], symbol.name))
+
             section.replace(rel['offset'], 8, label)
+            #end by JX
+
         elif reloc_type == ENUM_RELOC_TYPE_x64["R_X86_64_COPY"]:
             # NOP
             pass
@@ -407,6 +472,8 @@ if __name__ == "__main__":
         print("It looks like %s is not position independent" % args.bin)
         sys.Exit(1)
 
+    tls_list = loader.tlslist_from_symtable()
+
     flist = loader.flist_from_symtab()
     loader.load_functions(flist)
 
@@ -418,6 +485,7 @@ if __name__ == "__main__":
 
     global_list = loader.global_data_list_from_symtab()
     loader.load_globals_from_glist(global_list)
+
 
     loader.container.attach_loader(loader)
 

@@ -38,11 +38,17 @@ class Container():
 
         #added by JX
         self.alias_list = dict()
-
+        self.tls_list = dict()
+        #end by JX
 
     #added by JX
     def add_aliases(self, alias_list):
         self.alias_list = alias_list
+
+    def add_tlslist(self, tls_list):
+        self.tls_list = tls_list
+
+    #end by JX
 
     def add_function(self, function):
         if function.name in self.function_names:
@@ -71,7 +77,7 @@ class Container():
                 if gobj['name'] in done:
                     continue
                 self.sections[found].add_global(location, gobj['name'],
-                                                gobj['sz'])
+                                                gobj['sz'], gobj['visibility'], gobj['bind'])
                 done.add(gobj['name'])
 
     def is_target_gotplt(self, target):
@@ -335,10 +341,12 @@ class DataSection():
     def add_relocations(self, relocations):
         self.relocations.extend(relocations)
 
-    def add_global(self, location, label, sz):
+    def add_global(self, location, label, sz, vis, bind):
         self.named_globals[location].append({
             'label': label,
             'sz': sz,
+            'vis': vis,
+            'bind': bind,
         })
 
     def read_at(self, address, sz):
@@ -402,8 +410,11 @@ class DataSection():
 
             if location in self.named_globals:
                 for gobj in self.named_globals[location]:
-                    symdef = ".type\t{name},@object\n.globl {name}".format(
-                        name=gobj["label"])
+                    if gobj['bind'] == "STB_GLOBAL":
+                        symdef = ".type\t{name},@object\n.globl {name}".format(name=gobj["label"])
+                    else: 
+                        symdef = ".type\t{name},@object\n.local {name}".format(name=gobj["label"])
+                        
                     lblstr = "{}: # {:x} -- {:x}".format(
                         gobj["label"], location, location + gobj["sz"])
 
