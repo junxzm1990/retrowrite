@@ -43,17 +43,28 @@ class Loader():
             section = self.elffile.get_section_by_name(sec)
             data = section.data()
             more = bytearray()
-       
-            # added by JX; do not remove one item from init_array
-            # I have no idea of why doing that
-            more.extend(data)
-            if len(more) < sval['sz']:
-                more.extend(
-                    [0x0 for _ in range(0, sval['sz'] - len(more))])
+
+
+            #well, let's hope the first entry in init_array and fini_array are always "frame_dummy" and "__do_global_dtors_aux"  
+            if sec == ".init_array" or sec == ".fini_array":
+                if len(data) > 8:
+                    data = data[8:]
+                else:
+                    data = b''
+                more.extend(data)
+
+            else:
+                more.extend(data)
+                if len(more) < sval['sz']:
+                    more.extend([0x0 for _ in range(0, sval['sz'] - len(more))])
 
             bytes = more
-            ds = DataSection(sec, sval["base"], sval["sz"], bytes,
-                             sval['align'])
+
+        
+            if sec == ".init_array" or sec == ".fini_array":
+                ds = DataSection(sec, sval["base"] + 8, sval["sz"] - 8, bytes, sval['align'])
+            else:
+                ds = DataSection(sec, sval["base"], sval["sz"], bytes, sval['align'])
 
             self.container.add_section(ds)
 
@@ -257,7 +268,6 @@ class Loader():
             for symbol in section.iter_symbols():
                 if symbol['st_info']['type'] == "STT_TLS":
                     tlslist[symbol.name] = symbol
-                    print (symbol['st_info']['type'] + symbol.name)
 
         return tlslist
 

@@ -401,11 +401,9 @@ class Symbolizer():
                     if target in container.plt: 
                         is_an_import = container.plt[target]
                         sfx = "@PLT"
-                        print("PLT relocation at %x with name %s" % (ripbase, is_an_import))
                     elif target in all_symbols:
                         is_an_import = container.loader.adjust_sym_name(all_symbols[target])
                         sfx = ""
-                        print("Direct relocation  %x with name %s" % (ripbase, is_an_import))
                     else: 
                         for rel in [x for x in container.relocations[".dyn"] if x['offset'] == target]:
                             reloc_type = rel['type']
@@ -437,7 +435,6 @@ class Symbolizer():
                             if res and res in all_symbols:
                                 is_an_import = container.loader.adjust_sym_name(all_symbols[res])
                                 sfx = "@GOTPCREL"
-                                print("Indirect relocation offset %x and type %s at %x with name %s and addend %x" % (rel['offset'], rel['type'], ripbase, is_an_import, rel['addend']))
                                 break
 
                         #end by JX

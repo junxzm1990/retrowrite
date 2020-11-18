@@ -149,7 +149,6 @@ if __name__ == "__main__":
     loader.load_globals_from_glist(global_list)
 
     #added by JX
-    print("Loading alias list")
     alias_list = loader.aliaslist_from_symtab()
     loader.load_aliases(alias_list)
 
