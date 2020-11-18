@@ -9,6 +9,7 @@ from elftools.elf.descriptions import describe_reloc_type
 from elftools.elf.enums import ENUM_RELOC_TYPE_x64
 
 from elftools.elf.relocation import RelocationSection
+from elftools.elf.sections import SymbolTableSection
 
 class Rewriter():
     GCC_FUNCTIONS = [
@@ -75,10 +76,10 @@ class Rewriter():
             #main_tls_var:
             #        .zero   4
 
-        results.append(".section .tbss,@nobits")
+        results.append(".section .tbss")
         results.append(".align 32")
 
-        for tls in self.container.tls_list:
+        for key, tls in self.container.tls_list.items():
             results.append(".type\t" + tls.name + ",@object")
             results.append(".globl\t" + tls.name)
             results.append(".size\t" + tls.name + ", %d" % (tls['st_size']))
@@ -316,23 +317,66 @@ class Symbolizer():
 
 
     #added by JX
+
+    def obtain_all_symbols(self, container):
+
+        all_symbols = dict()
+
+        symbol_tables = [
+            sec for sec in container.loader.elffile.iter_sections()
+            if isinstance(sec, SymbolTableSection)
+        ]
+
+
+        for section in symbol_tables:
+            for sym in section.iter_symbols():
+                all_symbols[sym['st_value']] = sym
+
+        return all_symbols 
+
+
+
     def obtain_symbol_for_reloc(self, container, rel):
+
+        symbol_tables = [
+            sec for sec in container.loader.elffile.iter_sections()
+            if isinstance(sec, SymbolTableSection)
+        ]
+
+
+        for section in symbol_tables:
+            for sym in section.iter_symbols():
+                if rel['addend'] == sym['st_value']: 
+                    return sym
+
+        return None
+
 
         for section in container.loader.elffile.iter_sections():
             if not isinstance(section, RelocationSection):
                 continue
 
             symtable = container.loader.elffile.get_section(section['sh_link'])
-            symbol = None
 
             if rel['r_info_sym'] != 0:
-                symbol = symtable.get_symbol(rel['r_info_sym'])
+                return symtable.get_symbol(rel['r_info_sym'])
 
-            return symbol
+
+            for sym in symtable.iter_symbols():
+                if rel['addend'] == sym['st_value']:
+                    return sym
+
+            return None
         #end by JX
 
 
     def symbolize_mem_accesses(self, container, context):
+
+        #added by JX
+        all_symbols = self.obtain_all_symbols(container) 
+        #end by JX
+
+
         for _, function in container.functions.items():
             for inst in function.cache:
                 if inst.address in self.symbolized:
@@ -352,19 +396,51 @@ class Symbolizer():
 
                     is_an_import = False
 
-                    for relocation in container.relocations[".dyn"]:
-                        if relocation['st_value'] == target:
-                            is_an_import = relocation['name']
-                            sfx = ""
-                            break
-                        elif target in container.plt:
-                            is_an_import = container.plt[target]
-                            sfx = "@PLT"
-                            break
-                        elif relocation['offset'] == target:
-                            is_an_import = relocation['name']
-                            sfx = "@GOTPCREL"
-                            break
+
+                    #addef by JX
+                    if target in container.plt: 
+                        is_an_import = container.plt[target]
+                        sfx = "@PLT"
+                        print("PLT relocation at %x with name %s" % (ripbase, is_an_import))
+                    elif target in all_symbols:
+                        is_an_import = container.loader.adjust_sym_name(all_symbols[target])
+                        sfx = ""
+                        print("Direct relocation  %x with name %s" % (ripbase, is_an_import))
+                    else: 
+                        for rel in [x for x in container.relocations[".dyn"] if x['offset'] == target]:
+                            reloc_type = rel['type']
+
+                            #special case: tls symbols which have no real memory
+                            if reloc_type == ENUM_RELOC_TYPE_x64["R_X86_64_DTPMOD64"]:
+                                is_an_import = rel['name']
+                                sfx = "@TLSGD"
+                                break
+
+                            #regular cases: external symbols
+                            if rel['st_value'] == 0 and rel['name'] != None:
+                                is_an_import = rel['name']
+                                sfx = "@GOTPCREL"
+                                break
+
+                            res = 0
+
+                            #let's try to find the symbol
+                            if reloc_type == ENUM_RELOC_TYPE_x64["R_X86_64_64"]:
+                                res = rel['st_value'] + rel['addend']
+                            
+                            if reloc_type == ENUM_RELOC_TYPE_x64["R_X86_64_RELATIVE"]:
+                                res = rel['addend']
+
+                            if reloc_type == ENUM_RELOC_TYPE_x64["R_X86_64_GLOB_DAT"]:
+                                res = rel['st_value']
+
+                            if res and res in all_symbols:
+                                is_an_import = container.loader.adjust_sym_name(all_symbols[res])
+                                sfx = "@GOTPCREL"
+                                print("Indirect relocation offset %x and type %s at %x with name %s and addend %x" % (rel['offset'], rel['type'], ripbase, is_an_import, rel['addend']))
+                                break
+
+                        #end by JX
 
                     if is_an_import:
                         inst.op_str = inst.op_str.replace(
@@ -387,7 +463,7 @@ class Symbolizer():
                     if container.is_in_section(".rodata", target):
                         self.pot_sw_bases[function.start].add(target)
 
-    def _handle_relocation(self, container, section, rel):
+    def _handle_relocation(self, container, section, all_symbols, rel):
         reloc_type = rel['type']
         if reloc_type == ENUM_RELOC_TYPE_x64["R_X86_64_PC32"]:
             swbase = None
@@ -398,16 +474,24 @@ class Symbolizer():
             value = rel['st_value'] + rel['addend'] - (rel['offset'] - swbase)
             swlbl = ".LC%x-.LC%x" % (value, swbase)
             section.replace(rel['offset'], 4, swlbl)
+
         elif reloc_type == ENUM_RELOC_TYPE_x64["R_X86_64_64"]:
             value = rel['st_value'] + rel['addend']
             label = ".LC%x" % value
-            
-            # changed by JX
-            if value == 0 or value == 0x10:
-                symbol = self.obtain_symbol_for_reloc(container, rel)
-                if symbol:
-                    print("Found one at offset %x of value %x with name %s" % (value, rel['offset'], symbol.name))
-                    label = symbol.name
+          
+            #relocation already has a name
+            if rel['st_value']  == 0 and  rel['name'] != None:
+                label = rel['name']
+                if  rel['addend'] != 0:
+                     label += " + 0x%x" %  rel['addend']
+
+            #internal symbol
+            #we use name from symbols
+            elif rel['st_value'] and  rel['st_value'] in all_symbols:
+                    #if not, then use "sym + offset"
+                    label = container.loader.adjust_sym_name(all_symbols[rel['st_value']])
+                    if  rel['addend'] != 0:
+                        label += " + 0x%x" %  rel['addend']
 
             section.replace(rel['offset'], 8, label)
 
@@ -416,14 +500,9 @@ class Symbolizer():
         elif reloc_type == ENUM_RELOC_TYPE_x64["R_X86_64_RELATIVE"]:
             value = rel['addend']
             label = ".LC%x" % value
-            
-
-            # added by JX
-            if value == 0 or value == 0x10 :
-                symbol = self.obtain_symbol_for_reloc(container, rel)
-                if symbol:
-                    label = symbol.name
-                    print("Found one at offset %x of value %x with name %s" % (value, rel['offset'], symbol.name))
+          
+            if rel['addend'] in all_symbols:
+                label = container.loader.adjust_sym_name(all_symbols[rel['addend']])
 
             section.replace(rel['offset'], 8, label)
             #end by JX
@@ -436,20 +515,24 @@ class Symbolizer():
                 describe_reloc_type(reloc_type, container.loader.elffile)))
 
     def symbolize_data_sections(self, container, context=None):
+
+        #added by JX
+        all_symbols = self.obtain_all_symbols(container)
+        #end by JX
+
         # Section specific relocation
         for secname, section in container.sections.items():
             for rel in section.relocations:
-                self._handle_relocation(container, section, rel)
+                self._handle_relocation(container, section, all_symbols, rel)
 
         # .dyn relocations
         dyn = container.relocations[".dyn"]
         for rel in dyn:
             section = container.section_of_address(rel['offset'])
             if section:
-                self._handle_relocation(container, section, rel)
-            else:
-                print("[x] Couldn't find valid section {:x}".format(
-                    rel['offset']))
+                self._handle_relocation(container, section, all_symbols, rel)
+            #else:
+             #   print("[x] Couldn't find valid section {:x}".format(rel['offset']))
 
 
 if __name__ == "__main__":

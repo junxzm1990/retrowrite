@@ -246,7 +246,7 @@ class Loader():
             if isinstance(sec, SymbolTableSection)
         ]
 
-        tlslist = set()
+        tlslist = dict()
 
         for section in symbol_tables:
 
@@ -256,7 +256,7 @@ class Loader():
             #let's aggressively consider all aliases
             for symbol in section.iter_symbols():
                 if symbol['st_info']['type'] == "STT_TLS":
-                    tlslist.add(symbol)
+                    tlslist[symbol.name] = symbol
                     print (symbol['st_info']['type'] + symbol.name)
 
         return tlslist
