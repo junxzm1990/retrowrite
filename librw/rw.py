@@ -320,6 +320,8 @@ class Symbolizer():
 
     def obtain_all_symbols(self, container):
 
+        print("Trying to find all symbols")
+
         all_symbols = dict()
 
         symbol_tables = [
@@ -330,43 +332,17 @@ class Symbolizer():
 
         for section in symbol_tables:
             for sym in section.iter_symbols():
-                all_symbols[sym['st_value']] = sym
+                if sym['st_shndx'] != 'SHN_UNDEF':
+                    all_symbols[sym['st_value']] = sym
 
+                    if sym['st_value'] == 0x124e0b0:
+                        print("Hmm, name found " + sym.name)
+
+
+        print("Total numer of symbols %d" % len(all_symbols))
         return all_symbols 
 
 
-
-    def obtain_symbol_for_reloc(self, container, rel):
-
-        symbol_tables = [
-            sec for sec in container.loader.elffile.iter_sections()
-            if isinstance(sec, SymbolTableSection)
-        ]
-
-
-        for section in symbol_tables:
-            for sym in section.iter_symbols():
-                if rel['addend'] == sym['st_value']: 
-                    return sym
-
-        return None
-
-
-        for section in container.loader.elffile.iter_sections():
-            if not isinstance(section, RelocationSection):
-                continue
-
-            symtable = container.loader.elffile.get_section(section['sh_link'])
-
-            if rel['r_info_sym'] != 0:
-                return symtable.get_symbol(rel['r_info_sym'])
-
-
-            for sym in symtable.iter_symbols():
-                if rel['addend'] == sym['st_value']:
-                    return sym
-
-            return None
         #end by JX
 
 
@@ -401,11 +377,16 @@ class Symbolizer():
                     if target in container.plt: 
                         is_an_import = container.plt[target]
                         sfx = "@PLT"
-                    elif target in all_symbols:
+
+                    #prioritize the cases where target matches a symbol location
+                    #this will ensure the correctness when we will encounter cases where 
+                    # (i) target matches a symbol location and (ii) target matches the offset of a relocation
+                    elif target in all_symbols and all_symbols[target]['st_info']['type'] != 'STT_SECTION':
                         is_an_import = container.loader.adjust_sym_name(all_symbols[target])
                         sfx = ""
                     else: 
                         for rel in [x for x in container.relocations[".dyn"] if x['offset'] == target]:
+
                             reloc_type = rel['type']
 
                             #special case: tls symbols which have no real memory
@@ -414,7 +395,7 @@ class Symbolizer():
                                 sfx = "@TLSGD"
                                 break
 
-                            #regular cases: external symbols
+                            #well, special cases... what can you do ... 
                             if rel['st_value'] == 0 and rel['name'] != None:
                                 is_an_import = rel['name']
                                 sfx = "@GOTPCREL"
@@ -423,19 +404,22 @@ class Symbolizer():
                             res = 0
 
                             #let's try to find the symbol
-                            if reloc_type == ENUM_RELOC_TYPE_x64["R_X86_64_64"]:
-                                res = rel['st_value'] + rel['addend']
-                            
-                            if reloc_type == ENUM_RELOC_TYPE_x64["R_X86_64_RELATIVE"]:
-                                res = rel['addend']
-
-                            if reloc_type == ENUM_RELOC_TYPE_x64["R_X86_64_GLOB_DAT"]:
-                                res = rel['st_value']
-
-                            if res and res in all_symbols:
-                                is_an_import = container.loader.adjust_sym_name(all_symbols[res])
+                            if reloc_type == ENUM_RELOC_TYPE_x64["R_X86_64_64"] or reloc_type == ENUM_RELOC_TYPE_x64["R_X86_64_GLOB_DAT"]:
+                                is_an_import = rel['name'] # the name here is from the symbol index; check loader.py
                                 sfx = "@GOTPCREL"
                                 break
+                            
+                            #relative relocation will have no symbol index;;; so what can we do? ...
+                            if reloc_type == ENUM_RELOC_TYPE_x64["R_X86_64_RELATIVE"]:
+                                res = rel['addend']
+                                if res in all_symbols:
+                                    is_an_import = container.loader.adjust_sym_name(all_symbols[res])
+                                    sfx = "@GOTPCREL"
+                                    break
+
+                            #if reloc_type == ENUM_RELOC_TYPE_x64["R_X86_64_GLOB_DAT"]:
+                            #    res = rel['st_value']
+
 
                         #end by JX
 
@@ -450,12 +434,13 @@ class Symbolizer():
                             inst.op_str = inst.op_str.replace(
                                 hex(value), ".LC%x" % (target))
                         else:
+                            oritarget = target
                             target, adjust = self._adjust_target(
                                 container, target)
                             inst.op_str = inst.op_str.replace(
                                 hex(value), "%d+.LC%x" % (adjust, target))
                             print("[*] Adjusted: %x -- %d+.LC%x" %
-                                  (inst.address, adjust, target))
+                                  (inst.address, adjust, oritarget))
 
                     if container.is_in_section(".rodata", target):
                         self.pot_sw_bases[function.start].add(target)
